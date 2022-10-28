@@ -62,7 +62,7 @@ class JavaDoc(NamedTuple):
     implements: List[str] = []
 
 def parse_field(field_node) -> ClassField:
-    signature_parts = field_node.select_one("div[class=\"member-signature\"]").text.replace("\xa0", " ").split(" ")
+    signature_parts = field_node.select_one("div[class=\"member-signature\"]").text.replace("\xa0", " ").strip().split(" ")
     divs = list(field_node.select('div'))
 
     field_desc = ""
@@ -72,14 +72,16 @@ def parse_field(field_node) -> ClassField:
 
 BUILT_IN_METHODS = ["toString", "equals"]
 def parse_method(method_node, is_constructor = False) -> ClassMethod:
-    whole_signature = method_node.select_one("div[class=\"member-signature\"]").text.replace("\xa0", " ").replace("\r", " ").replace("\n", " ").replace(" " * 2, " ")
+    whole_signature = method_node.select_one("div[class=\"member-signature\"]").text.replace("\xa0", " ").replace("\r", " ").replace("\n", " ").replace(" " * 2, " ").strip()
+    if is_constructor: print(f"{whole_signature=}")
+    
     first_half, parameters = whole_signature.split("(")
     assert parameters[-1] == ")", "Method signature should end with closing parenthesis"
     parameters = parameters[:-1]
     if parameters == "":
         parameters = []
     else:
-        parameters = [(parampair.split(" ")[0], parampair.split(" ")[1]) for parampair in parameters.split(", ")]
+        parameters = [(parampair.strip().split(" ")[0], parampair.strip().split(" ")[1]) for parampair in parameters.split(", ")]
 
     signature_parts = first_half.split(" ")
     method_name = signature_parts[-1]
