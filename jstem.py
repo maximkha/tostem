@@ -25,7 +25,7 @@ def desc_group(children: List) -> List[Tuple[str, str]]:
             if current_datatag == None:
                 raise ValueError("Incorrect format for a datalist")
             # NOTE: just to clean this up I will remove the - , thing
-            attribs.append((current_datatag, element.text.replace("\xa0", " ").replace(" - , ", " - ")))
+            attribs.append((current_datatag, element.text.replace("\xa0", " ").replace(" - , ", " - ").strip()))
 
     return attribs
 
@@ -217,7 +217,8 @@ def gen_stub(jdoc: JavaDoc) -> str:
     text += "\n"
 
     for method in jdoc.methods:
-        methodcomments = copy.copy(method.javadocstr.split('\n'))
+        methodcomments = copy.copy(method.javadocstr.replace("\r\n", "\n").strip().split('\n'))
+        methodcomments = list(map(lambda x: x.strip(), methodcomments))
 
         optional_annotation = ""
         for jdocattrib in method.annotations:
@@ -231,12 +232,11 @@ def gen_stub(jdoc: JavaDoc) -> str:
             
         if len(methodcomments) > 1:
             jdocannotation = '\n   * '.join(methodcomments)
-            text += f"  /** {jdocannotation}\n   */\n"
+            text += f"  /** {jdocannotation.rstrip()}\n   */\n"
         elif len(methodcomments) == 1:
-            
-            text += f"  /** {methodcomments[0]} */\n"
+            text += f"  /** {methodcomments[0].rstrip()} */\n"
         
-        text += f"{'  ' + optional_annotation if optional_annotation != '' else ''}"
+        text += f"{'  ' + optional_annotation.strip() if optional_annotation != '' else ''}"
 
         text += f"  {method.modifier}{' static' if method.is_static else ''} {method.return_type + ' ' if method.return_type != None else ''}{method.name}({', '.join([ptype + ' ' + pname for ptype, pname in method.parameters_types])}) {{\n"
         text += f"    // TODO: Implement me\n"
