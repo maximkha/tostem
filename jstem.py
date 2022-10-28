@@ -223,7 +223,7 @@ def gen_stub(jdoc: JavaDoc) -> str:
         optional_annotation = ""
         for jdocattrib in method.annotations:
             name, val = jdocattrib
-            if name in ["parameter", "returns", "throws"]:
+            if name in ["param", "returns", "throws"]:
                 val_parts = val.split('\n')
                 better_wrapped = '\n   * '.join(val_parts)
 
