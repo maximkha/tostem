@@ -39,6 +39,7 @@ class ClassMethod(NamedTuple):
     parameters_types: List[Tuple[str, str]]
 
     javadocstr: str
+    is_constructor: bool
 
     annotations: List[Tuple[str, str]] = []
     inferred_body: str = ""
@@ -70,15 +71,15 @@ def parse_field(field_node) -> ClassField:
     return ClassField(signature_parts[-1], signature_parts[0], "static" in signature_parts, "final" in signature_parts, signature_parts[-2], field_desc)
 
 BUILT_IN_METHODS = ["toString", "equals"]
-def parse_method(method_node) -> ClassMethod:
-    whole_signature = method_node.select_one("div[class=\"member-signature\"]").text.replace("\xa0", " ")
+def parse_method(method_node, is_constructor = False) -> ClassMethod:
+    whole_signature = method_node.select_one("div[class=\"member-signature\"]").text.replace("\xa0", " ").replace("\r", " ").replace("\n", " ").replace(" " * 2, " ")
     first_half, parameters = whole_signature.split("(")
     assert parameters[-1] == ")", "Method signature should end with closing parenthesis"
     parameters = parameters[:-1]
     if parameters == "":
         parameters = []
     else:
-        parameters = [(parampair.split(" ")[0], parampair.split(" ")[1]) for parampair in parameters.split(",")]
+        parameters = [(parampair.split(" ")[0], parampair.split(" ")[1]) for parampair in parameters.split(", ")]
 
     signature_parts = first_half.split(" ")
     method_name = signature_parts[-1]
@@ -90,10 +91,16 @@ def parse_method(method_node) -> ClassMethod:
     annotation = method_node.select_one("dl[class=\"notes\"]")
     annotations = desc_group(annotation)
     
-    if method_name in BUILT_IN_METHODS:
-        annotations.append(["override", ""])
+    # can't get overridden
+    if not is_constructor:
+        if method_name in BUILT_IN_METHODS:
+            annotations.append(["override", ""])
 
-    return ClassMethod(method_name, signature_parts[0], "static" in signature_parts, signature_parts[-2], parameters, field_desc, annotations)
+    ret_type = None
+    if not is_constructor:
+        ret_type = signature_parts[-2]
+    
+    return ClassMethod(method_name, signature_parts[0], "static" in signature_parts, ret_type, parameters, field_desc, is_constructor, annotations)
 
 def parse_from_html(html_obj, infer_method = True) -> JavaDoc:
     document = BeautifulSoup(html_obj, features="lxml")
@@ -123,11 +130,17 @@ def parse_from_html(html_obj, infer_method = True) -> JavaDoc:
     if method_objs == None: method_objs = []
     class_methods = list(map(parse_method, method_objs))
 
+    constructor_objs = document.select("section[class=\"constructor-details\"] > ul > li > section[class=\"detail\"]")
+    if constructor_objs == None: constructor_objs = []
+    class_constructors = list(map(lambda x: parse_method(x, True), constructor_objs))
+
+    class_methods = class_constructors + class_methods
+
     if infer_method:
         new_class_methods = []
         for class_method in class_methods:
             new_class_method = class_method
-            if class_method.name.startswith("get"):
+            if class_method.name.startswith("get") and not class_method.is_constructor:
                 inferred_varname = lower_first(class_method.name[len("get"):])
                 print(f"Get {inferred_varname} should be {class_method.return_type}")
 
@@ -146,7 +159,7 @@ def parse_from_html(html_obj, infer_method = True) -> JavaDoc:
                         new_class_method = class_method._replace(inferred_body = f"// WARNING: Couldn't exact match!\n    return this.{inferred_varname};")
                     else:
                         new_class_method = class_method._replace(inferred_body = f"// WARNING: Couldn't exact match!\n    return {inferred_varname};")
-            elif class_method.name.startswith("set") and len(class_method.parameters_types) == 1:
+            elif class_method.name.startswith("set") and len(class_method.parameters_types) == 1 and not class_method.is_constructor:
                 inferred_varname = lower_first(class_method.name[len("set"):])
                 print(f"Set {inferred_varname} should be {class_method.return_type}")
 
@@ -166,6 +179,24 @@ def parse_from_html(html_obj, infer_method = True) -> JavaDoc:
                         new_class_method = new_class_method = class_method._replace(inferred_body = f"// WARNING: Couldn't exact match!\n    this.{matching[0].name} = {pname};")
                     else:
                         new_class_method = new_class_method = class_method._replace(inferred_body = f"// WARNING: Couldn't exact match!\n    {matching[0].name} = {pname};")
+            elif class_method.is_constructor:
+                print(f"Constructor!")
+
+                cons_body = "// Note: filling this in as a generic setter\n"
+                vartoset = [pname for ptype, pname in class_method.parameters_types if pname in [field.name for field in class_fields]]
+                for varname in vartoset:
+                    matching_method_vars = list(filter(lambda x: x[1] == varname, class_method.parameters_types))
+                    matching_class_field = list(filter(lambda x: x.name == varname, class_fields))
+                    assert len(matching_method_vars) == 1, "This should literally never happen"
+                    assert len(matching_class_field) == 1, "This should literally never happen"
+                    if matching_method_vars[0][0] == matching_class_field[0].field_type:
+                        if not class_method.is_static:
+                            cons_body += f"    this.{matching_class_field[0].name} = {matching_method_vars[0][1]};\n"
+                        else:
+                            staticnamewarn = '// ERROR: Invalid static and param names!!!!!\n    ' if matching_class_field[0].name == matching_method_vars[0][1] else ''
+                            cons_body += f"    {staticnamewarn}{matching_class_field[0].name} = {matching_method_vars[0][1]};\n"
+                if cons_body != "// Note: filling this in as a generic setter\n":
+                    new_class_method = class_method._replace(inferred_body = cons_body)
 
             else: new_class_method = class_method
             new_class_methods.append(new_class_method)
@@ -190,16 +221,22 @@ def gen_stub(jdoc: JavaDoc) -> str:
         for jdocattrib in method.annotations:
             name, val = jdocattrib
             if name in ["parameter", "returns", "throws"]:
-                methodcomments.append(f" @{name} {val}")
+                val_parts = val.split('\n')
+                better_wrapped = '\n   * '.join(val_parts)
+
+                methodcomments.append(f" @{name} {better_wrapped}")
             elif name == "override": optional_annotation = "@Override\n"
             
-        if len(methodcomments) > 0:
+        if len(methodcomments) > 1:
             jdocannotation = '\n   * '.join(methodcomments)
             text += f"  /** {jdocannotation}\n   */\n"
+        elif len(methodcomments) == 1:
+            
+            text += f"  /** {methodcomments[0]} */\n"
         
         text += f"{'  ' + optional_annotation if optional_annotation != '' else ''}"
 
-        text += f"  {method.modifier}{' static' if method.is_static else ''} {method.return_type} {method.name}({' '.join([sub_val for vals in method.parameters_types for sub_val in vals])}) {{\n"
+        text += f"  {method.modifier}{' static' if method.is_static else ''} {method.return_type + ' ' if method.return_type != None else ''}{method.name}({', '.join([ptype + ' ' + pname for ptype, pname in method.parameters_types])}) {{\n"
         text += f"    // TODO: Implement me\n"
         if method.inferred_body != "":
             text += f"    {method.inferred_body}\n"
