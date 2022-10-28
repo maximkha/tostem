@@ -87,6 +87,7 @@ def parse_method(method_node, is_constructor = False) -> ClassMethod:
     method_name = signature_parts[-1]
 
     divs = list(method_node.select('div'))
+    field_desc = ""
     if len(divs) > 1:
         field_desc = divs[-1].text
 
