@@ -1,4 +1,7 @@
+import argparse
 import copy
+import re
+import requests
 from typing import Dict, NamedTuple, List, Tuple, Union
 from bs4 import BeautifulSoup
 
@@ -8,7 +11,6 @@ def lower_first(text: str) -> str:
 TO_ATTRIB = {"parameters": "parameter"}
 
 def desc_group(children: List) -> List[Tuple[str, str]]:
-    print(f"{children=}")
     if children == None: return []
 
     attribs = []
@@ -19,14 +21,12 @@ def desc_group(children: List) -> List[Tuple[str, str]]:
             current_datatag = lower_first(element.text)
             current_datatag = current_datatag.replace(":", "")
             current_datatag = TO_ATTRIB.get(current_datatag, current_datatag)
-            print(f"{current_datatag=}")
         elif element.name == "dd":
             if current_datatag == None:
                 raise ValueError("Incorrect format for a datalist")
             # NOTE: just to clean this up I will remove the - , thing
             attribs.append((current_datatag, element.text.replace("\xa0", " ").replace(" - , ", " - ")))
 
-    print(f"{attribs=}")
     return attribs
 
 # [access_modifier] [static] [return_type] [name] ([parameters & types]) ;
@@ -60,29 +60,27 @@ class JavaDoc(NamedTuple):
     extends: str = ""
     implements: List[str] = []
 
-BUILT_IN_METHODS = ["toString", "equals"]
-
 def parse_field(field_node) -> ClassField:
-    signature_parts = field_node.select_one("div[class=\"member-signature\"]").text.split("\xa0")
+    signature_parts = field_node.select_one("div[class=\"member-signature\"]").text.replace("\xa0", " ").split(" ")
     divs = list(field_node.select('div'))
 
     field_desc = ""
     if len(divs) > 1:
         field_desc = divs[-1].text
-
     return ClassField(signature_parts[-1], signature_parts[0], "static" in signature_parts, "final" in signature_parts, signature_parts[-2], field_desc)
 
+BUILT_IN_METHODS = ["toString", "equals"]
 def parse_method(method_node) -> ClassMethod:
-    whole_signature = method_node.select_one("div[class=\"member-signature\"]").text
+    whole_signature = method_node.select_one("div[class=\"member-signature\"]").text.replace("\xa0", " ")
     first_half, parameters = whole_signature.split("(")
     assert parameters[-1] == ")", "Method signature should end with closing parenthesis"
     parameters = parameters[:-1]
     if parameters == "":
         parameters = []
     else:
-        parameters = [(parampair.split("\xa0")[0], parampair.split("\xa0")[1]) for parampair in parameters.split(",")]
+        parameters = [(parampair.split(" ")[0], parampair.split(" ")[1]) for parampair in parameters.split(",")]
 
-    signature_parts = first_half.split("\xa0")
+    signature_parts = first_half.split(" ")
     method_name = signature_parts[-1]
 
     divs = list(method_node.select('div'))
@@ -91,6 +89,9 @@ def parse_method(method_node) -> ClassMethod:
 
     annotation = method_node.select_one("dl[class=\"notes\"]")
     annotations = desc_group(annotation)
+    
+    if method_name in BUILT_IN_METHODS:
+        annotations.append(["override", ""])
 
     return ClassMethod(method_name, signature_parts[0], "static" in signature_parts, signature_parts[-2], parameters, field_desc, annotations)
 
@@ -141,7 +142,10 @@ def parse_from_html(html_obj, infer_method = True) -> JavaDoc:
                         new_class_method = class_method._replace(inferred_body = f"return {matching[0].name};")
                 else:
                     # new_class_method = class_method
-                    new_class_method = class_method._replace(inferred_body = f"// WARNING: Couldn't exact match!!!\n    return this.{inferred_varname};")
+                    if not class_method.is_static:
+                        new_class_method = class_method._replace(inferred_body = f"// WARNING: Couldn't exact match!\n    return this.{inferred_varname};")
+                    else:
+                        new_class_method = class_method._replace(inferred_body = f"// WARNING: Couldn't exact match!\n    return {inferred_varname};")
             elif class_method.name.startswith("set") and len(class_method.parameters_types) == 1:
                 inferred_varname = lower_first(class_method.name[len("set"):])
                 print(f"Set {inferred_varname} should be {class_method.return_type}")
@@ -155,12 +159,13 @@ def parse_from_html(html_obj, infer_method = True) -> JavaDoc:
                     if not class_method.is_static:
                         new_class_method = class_method._replace(inferred_body = f"this.{matching[0].name} = {pname};")
                     else:
-                        new_class_method = class_method._replace(inferred_body = f"return {matching[0].name} = {pname};")
+                        staticnamewarn = '// ERROR: Invalid static and param names!!!!!\n    ' if matching[0].name == pname else ''
+                        new_class_method = class_method._replace(inferred_body = f"{staticnamewarn}{matching[0].name} = {pname};")
                 else:
                     if not class_method.is_static:
-                        new_class_method = new_class_method = class_method._replace(inferred_body = f"// WARNING: Couldn't exact match!!!\n    this.{matching[0].name} = {pname};")
+                        new_class_method = new_class_method = class_method._replace(inferred_body = f"// WARNING: Couldn't exact match!\n    this.{matching[0].name} = {pname};")
                     else:
-                        new_class_method = new_class_method = class_method._replace(inferred_body = f"// WARNING: Couldn't exact match!!!\n    {matching[0].name} = {pname};")
+                        new_class_method = new_class_method = class_method._replace(inferred_body = f"// WARNING: Couldn't exact match!\n    {matching[0].name} = {pname};")
 
             else: new_class_method = class_method
             new_class_methods.append(new_class_method)
@@ -169,29 +174,33 @@ def parse_from_html(html_obj, infer_method = True) -> JavaDoc:
     return JavaDoc(class_name, class_methods, class_fields, extends, implements)
 
 def gen_stub(jdoc: JavaDoc) -> str:
-    text = f"public class {jdoc.class_name}{' extends ' + jdoc.extends if jdoc.extends != '' else ''}{' implements ' + ', '.join(jdoc.implements) if len(jdoc.extends) > 0 else ''} {{\n"
+    text = f"public class {jdoc.class_name}{' extends ' + jdoc.extends if jdoc.extends != '' else ''}{' implements ' + ', '.join(jdoc.implements) if len(jdoc.implements) > 0 else ''} {{\n"
     for field in jdoc.fields:
         if field.javadocstr != "":
             jdocannotation = '\n  //'.join(field.javadocstr.split('\n'))
             text += f"  // {jdocannotation}\n"
         
-        text += f"  {field.modifier}{' final' if field.is_final else ''}{' static' if field.is_static else ''} {field.field_type} {field.name};\n"
+        text += f"  {field.modifier}{' static' if field.is_static else ''}{' final' if field.is_final else ''} {field.field_type} {field.name};\n"
     text += "\n"
 
     for method in jdoc.methods:
         methodcomments = copy.copy(method.javadocstr.split('\n'))
 
+        optional_annotation = ""
         for jdocattrib in method.annotations:
             name, val = jdocattrib
             if name in ["parameter", "returns", "throws"]:
                 methodcomments.append(f" @{name} {val}")
+            elif name == "override": optional_annotation = "@Override\n"
             
         if len(methodcomments) > 0:
             jdocannotation = '\n   * '.join(methodcomments)
             text += f"  /** {jdocannotation}\n   */\n"
         
+        text += f"{'  ' + optional_annotation if optional_annotation != '' else ''}"
+
         text += f"  {method.modifier}{' static' if method.is_static else ''} {method.return_type} {method.name}({' '.join([sub_val for vals in method.parameters_types for sub_val in vals])}) {{\n"
-        text += f"    //TODO: Implement me\n"
+        text += f"    // TODO: Implement me\n"
         if method.inferred_body != "":
             text += f"    {method.inferred_body}\n"
         text += "  }\n\n"
@@ -199,7 +208,35 @@ def gen_stub(jdoc: JavaDoc) -> str:
     text += "}"
     return text
 
-with open("room.html", "rt") as f:
-    print(f"{parse_from_html(f)=}")
-    parse_from_html(f)
-    print(gen_stub(parse_from_html(f)))
+# with open("room.html", "rt") as f:
+#     print(f"{parse_from_html(f)=}")
+#     parse_from_html(f)
+#     print(gen_stub(parse_from_html(f)))
+
+parser = argparse.ArgumentParser(prog = 'jstem')
+parser.add_argument('file', help='can be either a local html file or http address with the jdoc')
+parser.add_argument('-o', '--output', default="")
+args = parser.parse_args()
+
+tmatch = re.search(r"[^\/\\]+\.htm", args.file)
+
+if tmatch == None:
+    print("Argument file should be some kind of html file (end with .html/.htm)!")
+    parser.print_usage()
+    exit(1)
+
+guess_name = tmatch.group().replace(".html", ".java").replace(".htm", ".java")
+if args.output == "":
+    print(f"Output will be written to {guess_name}")
+    args.output = guess_name
+
+if args.file.startswith("http"):
+    print("Assuming file is a http address!")
+    
+    r = requests.get(args.file)
+    with open(args.output, "wt") as f_out:
+        f_out.write(gen_stub(parse_from_html(r.text)))
+else:
+    with open(args.file, "rt") as f_in:
+        with open(args.output, "wt") as f_out:
+            f_out.write(gen_stub(parse_from_html(f_in)))
