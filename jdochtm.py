@@ -208,11 +208,6 @@ def gen_stub(jdoc: JavaDoc) -> str:
     text += "}"
     return text
 
-# with open("room.html", "rt") as f:
-#     print(f"{parse_from_html(f)=}")
-#     parse_from_html(f)
-#     print(gen_stub(parse_from_html(f)))
-
 parser = argparse.ArgumentParser(prog = 'jstem')
 parser.add_argument('file', help='can be either a local html file or http address with the jdoc')
 parser.add_argument('-o', '--output', default="")
