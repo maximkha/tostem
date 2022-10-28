@@ -111,7 +111,7 @@ def parse_from_html(html_obj, infer_method = True) -> JavaDoc:
     extends_implements = document.select_one("span[class=\"extends-implements\"]")
     extends_implements = extends_implements.text.replace("\n", " ")
     parts = extends_implements.split(" implements ")
-    extends = parts[0][len("extends "):]
+    extends = parts[0][len("extends "):].strip()
     if extends == "Object": extends = ""
     implements = []
     # print(f"{extends=}")
@@ -269,8 +269,10 @@ if args.file.startswith("http"):
     
     r = requests.get(args.file)
     with open(args.output, "wt") as f_out:
-        f_out.write(gen_stub(parse_from_html(r.text)))
+        doc = parse_from_html(r.text)
+        f_out.write(gen_stub(doc))
 else:
     with open(args.file, "rt") as f_in:
         with open(args.output, "wt") as f_out:
-            f_out.write(gen_stub(parse_from_html(f_in)))
+            doc = parse_from_html(f_in)
+            f_out.write(gen_stub(doc))
