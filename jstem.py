@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 def lower_first(text: str) -> str:
     return text[:1].lower() + text[1:]
 
-TO_ATTRIB = {"parameters": "parameter"}
+TO_ATTRIB = {"parameters": "param"}
 
 def desc_group(children: List) -> List[Tuple[str, str]]:
     if children == None: return []
