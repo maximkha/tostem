@@ -74,7 +74,12 @@ BUILT_IN_METHODS = ["toString", "equals"]
 def parse_method(method_node, is_constructor = False) -> ClassMethod:
     whole_signature = method_node.select_one("div[class=\"member-signature\"]").text.replace("\xa0", " ").replace("\r", " ").replace("\n", " ").replace(" " * 2, " ").strip()
     if is_constructor: print(f"{whole_signature=}")
+
+    # remove the throws
+    whole_signature = whole_signature.split('throws')[0].strip()
     
+    print(f"{whole_signature=}")
+    print(f"{whole_signature.split('(')=}")
     first_half, parameters = whole_signature.split("(")
     assert parameters[-1] == ")", "Method signature should end with closing parenthesis"
     parameters = parameters[:-1]
